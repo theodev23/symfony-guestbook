@@ -6,6 +6,26 @@ Ce projet m'a permis d'approfondir l'écosystème Symfony à travers un cas conc
 
 Le projet suit le fil conducteur du **Symfony Fast Track**. Mon objectif n'était pas simplement de reproduire le tutoriel, mais de comprendre, configurer, déboguer et faire fonctionner ensemble les différentes briques du framework, en local puis dans un environnement de production.
 
+## Aperçu de l'application
+
+### Accueil
+
+La page d'accueil présente les différentes conférences disponibles.
+
+![Page d'accueil de Conference Guestbook](docs/screenshots/homepage.png)
+
+### Consultation d'une conférence
+
+Chaque conférence dispose de sa propre page permettant de consulter les commentaires publiés et d'en soumettre de nouveaux.
+
+![Page d'une conférence et formulaire de commentaire](docs/screenshots/conference.png)
+
+### API REST
+
+Les conférences et commentaires sont également exposés via une API REST construite avec API Platform.
+
+![Documentation de l'API avec API Platform](docs/screenshots/api.png)
+
 ## Fonctionnalités principales
 
 - Gestion de conférences et de commentaires avec Doctrine ORM
