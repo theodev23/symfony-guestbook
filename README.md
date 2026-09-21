@@ -2,9 +2,12 @@
 
 Application web développée avec Symfony 8.1 autour d'un système de conférences et de commentaires.
 
-Ce projet m'a permis d'approfondir l'écosystème Symfony à travers un cas concret : soumission et modération de commentaires, traitements asynchrones, notifications, API, cache, internationalisation et déploiement.
+Ce projet m'a permis d'approfondir l'écosystème Symfony à travers un cas concret : soumission et modération de commentaires, traitements asynchrones, notifications, API REST, cache HTTP, internationalisation et déploiement en production.
 
 Le projet suit le fil conducteur du **Symfony Fast Track**. Mon objectif n'était pas simplement de reproduire le tutoriel, mais de comprendre, configurer, déboguer et faire fonctionner ensemble les différentes briques du framework, en local puis dans un environnement de production.
+
+**Démo en ligne :**  
+https://main-bvxea6i-n4byujhwlf4fe.fr-4.platformsh.site/
 
 ## Aperçu de l'application
 
@@ -34,29 +37,30 @@ Les conférences et commentaires sont également exposés via une API REST const
 - Workflow de modération des commentaires
 - Détection de spam avec Symfony AI et OpenAI
 - Traitements asynchrones avec Symfony Messenger et RabbitMQ
-- Notifications par email et Slack avec Symfony Notifier
+- Notifications de modération par email et intégration Slack avec Symfony Notifier
+- Actions d'acceptation et de rejet des commentaires
 - Redimensionnement des images avant publication
-- Gestion des sessions et du cache avec Redis
+- Gestion des sessions avec Redis
 - Cache HTTP avec Varnish
 - API REST avec API Platform
 - Interface dynamique avec Turbo et Stimulus
 - Internationalisation français / anglais
 - Tests avec PHPUnit, Foundry et Panther
-- Environnement local Docker
+- Environnement local avec Docker
 - Déploiement sur Upsun
 
 ## Architecture générale
 
-Le traitement d'un commentaire est volontairement découplé afin de ne pas faire dépendre la réponse HTTP de traitements potentiellement longs.
+Le traitement d'un commentaire est découplé afin de ne pas faire dépendre la réponse HTTP de traitements potentiellement longs.
 
 ```text
 Utilisateur
     │
     ▼
-ConferenceController
+Soumission du commentaire
     │
     ├── Validation du formulaire
-    ├── Enregistrement du commentaire
+    └── Enregistrement en base
     │
     ▼
 Symfony Messenger
@@ -65,19 +69,39 @@ Symfony Messenger
 RabbitMQ
     │
     ▼
-CommentMessageHandler
+Worker Messenger
     │
-    ├── Analyse anti-spam
-    ├── Workflow de modération
-    ├── Optimisation éventuelle de l'image
+    ▼
+Analyse anti-spam
     │
-    └── Notification de l'administrateur
-            │
-            ├── Email
-            └── Slack
+    ▼
+Symfony Workflow
+    │
+    ├── spam ───────────────────────→ fin
+    │
+    └── ham / potential_spam
+                │
+                ▼
+        Notification de revue
+          │             │
+        Email         Slack
+                │
+                ▼
+        Décision administrateur
+           │             │
+        Rejet          Acceptation
+           │             │
+           ▼             ▼
+        rejected      Messenger
+                         │
+                         ▼
+                 Optimisation image
+                         │
+                         ▼
+                     published
 ```
 
-L'objectif de cette architecture est notamment d'éviter que des opérations lentes, comme un appel à une API externe, le traitement d'une image ou l'envoi d'une notification, ne bloquent la requête HTTP de l'utilisateur.
+Cette architecture permet notamment d'éviter qu'un appel à une API externe, le traitement d'une image ou l'envoi d'une notification ne bloque la requête HTTP de l'utilisateur.
 
 ## Stack technique
 
@@ -85,13 +109,15 @@ L'objectif de cette architecture est notamment d'éviter que des opérations len
 
 **Asynchrone :** Symfony Messenger, RabbitMQ
 
-**Cache et sessions :** Redis, cache HTTP, Varnish
+**Sessions :** Redis
+
+**Cache HTTP :** Symfony HTTP Cache, ESI, Varnish
 
 **Frontend :** Twig, Bootstrap, AssetMapper, Turbo, Stimulus
 
 **API :** API Platform
 
-**Services externes :** Symfony AI / OpenAI, Symfony Mailer, Symfony Notifier, Slack
+**IA et notifications :** Symfony AI, OpenAI, Symfony Mailer, Symfony Notifier, Slack
 
 **Tests :** PHPUnit, Zenstruck Foundry, Panther
 
@@ -125,20 +151,24 @@ Traitement du commentaire
 
 Cette architecture permet de sortir les traitements longs du cycle de la requête HTTP.
 
+Le worker est également utilisé pour les étapes suivantes du workflow, notamment les notifications et le traitement final avant publication.
+
 ### Workflow de modération
 
 Le cycle de vie d'un commentaire est modélisé avec Symfony Workflow.
 
-Un commentaire passe par plusieurs états avant sa publication ou son rejet.
-
 ```text
 submitted
-    ↓
-ham / potential_spam / spam
-    ↓
-ready
-    ↓
-published / rejected
+│
+├── accept ──────────────→ ham
+│                         ├── publish_ham → ready → optimize → published
+│                         └── reject_ham ────────────────→ rejected
+│
+├── might_be_spam ───────→ potential_spam
+│                         ├── publish → ready → optimize → published
+│                         └── reject ────────────────────→ rejected
+│
+└── reject_spam ─────────→ spam
 ```
 
 Les changements d'état passent par des **transitions explicites**, ce qui permet de centraliser les règles métier au lieu de modifier directement la propriété `state` à différents endroits du code.
@@ -147,7 +177,7 @@ Les changements d'état passent par des **transitions explicites**, ce qui perme
 
 Les nouveaux commentaires sont analysés avec **Symfony AI** et l'API OpenAI.
 
-Le résultat de l'analyse permet au workflow de déterminer la transition à appliquer :
+Le résultat de cette analyse détermine la première transition du workflow :
 
 - commentaire légitime ;
 - commentaire potentiellement indésirable ;
@@ -157,21 +187,21 @@ L'appel à l'API étant réalisé par un worker Messenger, l'utilisateur n'a pas
 
 ### Modération et notifications
 
-Lorsqu'une validation humaine est nécessaire, Symfony Notifier permet de prévenir l'administrateur.
+Lorsqu'une validation humaine est nécessaire, Symfony Notifier prévient l'administrateur.
 
-Deux canaux ont été mis en place :
+La modération fonctionne notamment par **email** : la notification contient les informations du commentaire ainsi que des actions permettant de l'accepter ou de le rejeter.
 
-- email ;
-- Slack.
+Le projet intègre également **Slack** comme canal complémentaire. Les notifications Slack peuvent elles aussi contenir des boutons `Accept` et `Reject`.
 
-Les notifications Slack peuvent contenir des actions permettant d'accepter ou de rejeter directement un commentaire.
+Les notifications sont envoyées de manière asynchrone grâce à Messenger.
 
-Cela m'a permis de travailler avec :
+Cette partie m'a permis de travailler avec :
 
 - Symfony Notifier ;
 - Symfony Mailer ;
 - Slack API ;
-- Messenger pour l'envoi asynchrone des notifications.
+- Messenger ;
+- les variables d'environnement et secrets de production.
 
 ### Traitement des images
 
@@ -179,24 +209,24 @@ Les utilisateurs peuvent joindre une photo à leur commentaire.
 
 Avant publication, le fichier peut être redimensionné afin d'éviter de conserver et servir des images inutilement volumineuses.
 
-Le traitement est effectué par le worker Messenger avant le passage du commentaire à l'état `published`.
+Le traitement est réalisé par le worker Messenger avant le passage du commentaire à l'état `published`.
 
 ### Redis
 
-Redis est utilisé comme service externe à l'application, notamment pour la gestion des sessions et certains mécanismes de cache.
+Redis est utilisé comme backend de stockage des sessions de l'application.
 
-Cette partie m'a permis de mieux comprendre la différence entre :
+Cette partie du projet m'a permis de mieux comprendre la différence entre :
 
 - stockage persistant en base de données ;
-- cache en mémoire ;
+- stockage en mémoire ;
 - session utilisateur ;
-- services accessibles via des variables d'environnement.
+- services d'infrastructure accessibles depuis l'application.
 
 ### Cache HTTP et Varnish
 
-Le projet utilise les mécanismes de cache HTTP de Symfony et Varnish en production.
+Le projet utilise les mécanismes de cache HTTP de Symfony ainsi que Varnish en production.
 
-Le principe est de servir directement une réponse mise en cache lorsque celle-ci est encore valide, sans exécuter systématiquement toute l'application Symfony.
+Le principe est de servir directement une réponse mise en cache lorsqu'elle est encore valide, sans exécuter systématiquement toute l'application Symfony.
 
 ```text
 Client
@@ -223,7 +253,7 @@ La documentation interactive est accessible via :
 
 Des groupes de sérialisation permettent de contrôler les propriétés exposées.
 
-Une extension Doctrine est également utilisée afin de garantir que seuls les commentaires ayant atteint l'état `published` soient accessibles publiquement via l'API.
+Une extension Doctrine garantit également que seuls les commentaires ayant atteint l'état `published` sont accessibles publiquement via l'API.
 
 ### Symfony UX
 
@@ -231,7 +261,7 @@ Le projet utilise **Turbo** et **Stimulus**.
 
 Turbo améliore la navigation en évitant certains rechargements complets de page.
 
-Stimulus permet d'ajouter de petits comportements JavaScript ciblés sans construire une application frontend séparée.
+Stimulus permet d'ajouter des comportements JavaScript ciblés sans construire une application frontend séparée.
 
 Il est notamment utilisé pour afficher un aperçu d'une image sélectionnée avant l'envoi du formulaire.
 
@@ -333,23 +363,42 @@ Les tests couvrent différentes couches de l'application, des services aux scén
 
 Les clés d'API et identifiants sensibles ne sont pas versionnés dans le dépôt.
 
-Selon les fonctionnalités utilisées, certaines valeurs doivent être configurées localement, notamment :
+Pour utiliser la détection de spam par IA, une clé OpenAI doit être configurée :
 
 ```text
 OPENAI_API_KEY
+```
+
+L'intégration Slack nécessite également :
+
+```text
 SLACK_DSN
+```
+
+L'adresse utilisée pour les notifications de modération peut être personnalisée avec :
+
+```text
 ADMIN_EMAIL
+```
+
+La configuration de l'envoi d'emails repose sur :
+
+```text
+MAILER_DSN
 ```
 
 Symfony Secrets et les variables d'environnement permettent de séparer la configuration sensible du code source.
 
-Les clés privées de déchiffrement ne doivent jamais être versionnées.
+Les clés privées de déchiffrement et tokens d'accès ne doivent jamais être versionnés.
 
 ## Déploiement
 
-L'application a également été déployée sur **Upsun**.
+L'application est déployée sur **Upsun**.
 
-L'environnement de production comprend notamment :
+**Production :**  
+https://main-bvxea6i-n4byujhwlf4fe.fr-4.platformsh.site/
+
+L'environnement comprend notamment :
 
 ```text
 Application Symfony
@@ -361,28 +410,33 @@ Application Symfony
 └── Stockage partagé
 ```
 
+Le worker Messenger est exécuté comme un processus dédié en production afin de consommer en continu les messages RabbitMQ.
+
 Cette partie du projet m'a permis de travailler sur la différence entre :
 
 - environnement local ;
 - environnement de test ;
 - environnement de production ;
 - configuration applicative ;
-- configuration d'infrastructure.
+- configuration d'infrastructure ;
+- variables d'environnement et secrets ;
+- workers longue durée.
 
 ## Difficultés rencontrées et apprentissages
 
 Une partie importante du projet a consisté à résoudre des problèmes qui n'étaient pas directement liés à l'écriture du code métier.
 
-J'ai notamment dû travailler sur :
+J'ai notamment travaillé sur :
 
 - la configuration de services Docker ;
 - les différences entre les versions des outils et la documentation ;
 - le fonctionnement des workers longue durée ;
-- la configuration de RabbitMQ ;
+- la configuration et le diagnostic de RabbitMQ ;
+- le traitement des messages Messenger en échec ;
+- la configuration des notifications email et Slack ;
 - les extensions PHP nécessaires à certains services ;
-- le cache HTTP ;
-- les variables d'environnement ;
-- les secrets Symfony ;
+- le cache HTTP et Varnish ;
+- les variables d'environnement et les secrets Symfony ;
 - les tunnels SSH vers les services Upsun ;
 - le déploiement et le diagnostic d'erreurs en production.
 
@@ -390,13 +444,9 @@ Ces difficultés ont constitué une partie importante de l'intérêt du projet, 
 
 ## Contexte du projet
 
-Ce projet a été réalisé dans le cadre de mon apprentissage approfondi de Symfony.
+Ce projet s'appuie sur le **Symfony Fast Track**, utilisé comme fil conducteur pour explorer progressivement l'écosystème Symfony dans une application complète.
 
-Il s'appuie sur le livre officiel **Symfony Fast Track**, que j'ai utilisé comme fil conducteur afin de découvrir progressivement les composants du framework et leur intégration dans une application complète.
-
-L'objectif était avant tout de comprendre les concepts abordés et de les faire fonctionner concrètement : Doctrine, sécurité, formulaires, Messenger, Workflow, Notifier, API Platform, Symfony UX, cache, Redis, RabbitMQ ou encore le déploiement.
-
-Le travail de configuration, de débogage et d'intégration des différentes briques a constitué une partie importante de cet apprentissage.
+Le travail réalisé a principalement porté sur la compréhension, la configuration et l'intégration des différentes briques : Doctrine, Security, Forms, Messenger, Workflow, Notifier, API Platform, Symfony UX, Redis, RabbitMQ, cache HTTP et déploiement sur Upsun.
 
 ## Auteur
 
