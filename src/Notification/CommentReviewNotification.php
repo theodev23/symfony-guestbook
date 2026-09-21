@@ -23,7 +23,7 @@ class CommentReviewNotification extends Notification implements EmailNotificatio
         parent::__construct('New comment posted');
     }
 
-    public function asEmailMessage(EmailRecipientInterface $recipient, string $transport = null): ?EmailMessage
+    public function asEmailMessage(EmailRecipientInterface $recipient, ?string $transport = null): ?EmailMessage
     {
         $message = EmailMessage::fromNotification($this, $recipient, $transport);
         $message->getMessage()
@@ -34,7 +34,7 @@ class CommentReviewNotification extends Notification implements EmailNotificatio
         return $message;
     }
 
-    public function asChatMessage(RecipientInterface $recipient, string $transport = null): ?ChatMessage
+    public function asChatMessage(RecipientInterface $recipient, ?string $transport = null): ?ChatMessage
     {
         if ('slack' !== $transport) {
             return null;
