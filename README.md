@@ -247,7 +247,7 @@ Exemples :
 Cloner le dépôt :
 
 ```bash
-git clone <URL_DU_DEPOT>
+git clone https://github.com/theodev23/symfony-guestbook.git
 cd symfony-guestbook
 ```
 
