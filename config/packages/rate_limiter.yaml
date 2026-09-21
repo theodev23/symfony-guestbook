@@ -1,0 +1,12 @@
+framework:
+    rate_limiter:
+        comment_submission:
+            policy: 'fixed_window'
+            limit: 5
+            interval: '1 hour'
+
+when@test:
+    framework:
+        rate_limiter:
+            comment_submission:
+                limit: 1000
